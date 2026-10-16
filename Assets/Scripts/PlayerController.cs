@@ -12,7 +12,6 @@ public class PlayerController : MonoBehaviour
     [SerializeField] float moveSpeed = 5f;
     [SerializeField] float jumpSpeed = 11f;
     [SerializeField] float gravityScale = 3f;
-    [SerializeField] float groundCheckRadius = 0.05f;
     [SerializeField] float fallDeathY = -8f;
     [SerializeField] bool followWithCamera = true;
 
@@ -21,7 +20,9 @@ public class PlayerController : MonoBehaviour
     Animator animator;
     float moveAxis;
     float jumpLock;
+    float carryX;
     bool dead;
+    readonly ContactPoint2D[] groundContacts = new ContactPoint2D[8];
 
     static readonly int SpeedId = Animator.StringToHash("Speed");
     static readonly int GroundedId = Animator.StringToHash("Grounded");
@@ -52,7 +53,12 @@ public class PlayerController : MonoBehaviour
         }
 
         moveAxis = ReadMove();
-        bool grounded = IsGrounded();
+        MovingPlatform platform;
+        bool grounded = CheckGround(out platform);
+        if (grounded && jumpLock <= 0f)
+            carryX = platform != null ? platform.Velocity.x : 0f;
+        else if (jumpLock <= 0f)
+            carryX = 0f;
 
         if (ReadJumpPressed() && grounded && jumpLock <= 0f)
         {
@@ -84,7 +90,20 @@ public class PlayerController : MonoBehaviour
             return;
         }
 
-        body.linearVelocity = new Vector2(moveAxis * moveSpeed, body.linearVelocity.y);
+        if (jumpLock <= 0f)
+        {
+            MovingPlatform platform;
+            if (CheckGround(out platform))
+            {
+                carryX = platform != null ? platform.Velocity.x : 0f;
+                if (body.linearVelocity.y > 0f)
+                    body.linearVelocity = new Vector2(body.linearVelocity.x, 0f);
+            }
+            else
+                carryX = 0f;
+        }
+
+        body.linearVelocity = new Vector2(moveAxis * moveSpeed + carryX, body.linearVelocity.y);
     }
 
     void LateUpdate()
@@ -110,6 +129,7 @@ public class PlayerController : MonoBehaviour
 
         dead = true;
         moveAxis = 0f;
+        carryX = 0f;
         animator.SetTrigger(DieId);
         body.linearVelocity = new Vector2(0f, body.linearVelocity.y);
     }
@@ -155,16 +175,24 @@ public class PlayerController : MonoBehaviour
                (pad.buttonSouth.wasPressedThisFrame || pad.dpad.up.wasPressedThisFrame);
     }
 
-    bool IsGrounded()
+    bool CheckGround(out MovingPlatform platform)
     {
-        var capsule = GetComponent<CapsuleCollider2D>();
-        Vector2 origin = (Vector2)transform.position + capsule.offset
-            + Vector2.down * (capsule.size.y * 0.5f + 0.02f);
-        var hits = Physics2D.OverlapCircleAll(origin, groundCheckRadius);
-        for (int i = 0; i < hits.Length; i++)
+        platform = null;
+        int contactCount = body.GetContacts(groundContacts);
+        for (int i = 0; i < contactCount; i++)
         {
-            if (hits[i].attachedRigidbody != body)
-                return true;
+            var contact = groundContacts[i];
+
+            // Only a surface pushing upward is ground. Side contacts must not
+            // activate platform carrying or the player will cling to walls.
+            if (contact.normal.y < 0.5f)
+                continue;
+
+            var other = contact.collider.attachedRigidbody == body
+                ? contact.otherCollider
+                : contact.collider;
+            platform = other.GetComponentInParent<MovingPlatform>();
+            return true;
         }
 
         return false;
